@@ -127,7 +127,15 @@ body {
 
   <input type="file" id="file-input" accept=".ifc">
   <div id="status">Aguardando IFC...</div>
-  <div id="props">Clique em um elemento para ver o PSet SPOL EV.</div>
+  <details>
+  <summary style="cursor:pointer; font-weight:bold;">
+    PSet SPOL EV
+  </summary>
+
+  <div id="props">
+    Clique em um elemento para ver as propriedades.
+  </div>
+</details>
 </div>
 
 <div id="viewer"></div>
