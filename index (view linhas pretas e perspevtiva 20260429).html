@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>IFC Viewer</title>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.module.js",
+    "three/examples/jsm/controls/OrbitControls.js": "https://cdn.jsdelivr.net/npm/three@0.152.2/examples/jsm/controls/OrbitControls.js",
+    "three/examples/jsm/utils/BufferGeometryUtils": "https://cdn.jsdelivr.net/npm/three@0.152.2/examples/jsm/utils/BufferGeometryUtils.js",
+    "three/examples/jsm/utils/BufferGeometryUtils.js": "https://cdn.jsdelivr.net/npm/three@0.152.2/examples/jsm/utils/BufferGeometryUtils.js",
+    "web-ifc": "https://cdn.jsdelivr.net/npm/web-ifc@0.0.47/web-ifc-api.js"
+  }
+}
+</script>
+
+<style>
+body {
+  margin: 0;
+  overflow: hidden;
+  font-family: Arial, sans-serif;
+  background: #f2f2f2;
+}
+
+#viewer {
+  width: 100vw;
+  height: 100vh;
+}
+
+#panel {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 280px;
+  max-height: 85vh;
+  overflow: auto;
+  background: white;
+  padding: 10px;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+  font-size: 12px;
+  z-index: 10;
+}
+
+#panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#title {
+  font-weight: bold;
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+#close-panel {
+  border: none;
+  background: transparent;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+#open-panel {
+  display: none;
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 11;
+  background: white;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+
+#status {
+  margin-bottom: 8px;
+  color: #444;
+}
+
+#props {
+  border-top: 1px solid #ddd;
+  padding-top: 8px;
+}
+
+.prop-title {
+  font-weight: bold;
+  margin-bottom: 6px;
+}
+
+.prop-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid #eee;
+  padding: 4px 0;
+}
+
+.prop-key {
+  font-weight: bold;
+  color: #333;
+  max-width: 50%;
+}
+
+.prop-value {
+  color: #555;
+  text-align: right;
+  max-width: 50%;
+  word-break: break-word;
+}
+</style>
+</head>
+
+<body>
+
+<button id="open-panel">Mostrar dados</button>
+
+<div id="panel">
+  <div id="panel-header">
+    <div id="title">Projeto</div>
+    <button id="close-panel">×</button>
+  </div>
+
+  <input type="file" id="file-input" accept=".ifc">
+  <div id="status">Aguardando IFC...</div>
+  <div id="props">Clique em um elemento para ver o PSet SPOL EV.</div>
+</div>
+
+<div id="viewer"></div>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { IFCLoader } from "https://cdn.jsdelivr.net/npm/web-ifc-three@0.0.126/IFCLoader.js";
+
+const params = new URLSearchParams(window.location.search);
+const fileUrl = params.get("file");
+const nome = params.get("nome") || "Projeto";
+
+document.getElementById("title").innerText = decodeURIComponent(nome);
+
+const status = document.getElementById("status");
+const propsPanel = document.getElementById("props");
+const panel = document.getElementById("panel");
+const openPanelBtn = document.getElementById("open-panel");
+
+document.getElementById("close-panel").addEventListener("click", () => {
+  panel.style.display = "none";
+  openPanelBtn.style.display = "block";
+});
+
+openPanelBtn.addEventListener("click", () => {
+  panel.style.display = "block";
+  openPanelBtn.style.display = "none";
+});
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xf2f2f2);
+
+const camera = new THREE.PerspectiveCamera(
+  60,
+  window.innerWidth / window.innerHeight,
+  0.1,
+  100000
+);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+document.getElementById("viewer").appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+
+const light = new THREE.DirectionalLight(0xffffff, 1);
+light.position.set(20, 40, 20);
+scene.add(light);
+
+const grid = new THREE.GridHelper(100, 100);
+scene.add(grid);
+
+const loader = new IFCLoader();
+loader.ifcManager.setWasmPath("https://cdn.jsdelivr.net/npm/web-ifc@0.0.47/");
+
+let model = null;
+let modelID = null;
+let selectedSubset = null;
+let edgeLines = null;
+let globalEdges = null;
+
+const highlightMaterial = new THREE.MeshBasicMaterial({
+  color: 0xffff00,
+  transparent: true,
+  opacity: 0.10,
+  depthTest: false,
+  depthWrite: false
+});
+
+const edgeMaterial = new THREE.LineBasicMaterial({
+  color: 0xffcc00,
+  depthTest: false,
+  depthWrite: false
+});
+
+const globalEdgeMaterial = new THREE.LineBasicMaterial({
+  color: 0x000000,
+  transparent: true,
+  opacity: 0.28,
+  depthTest: true,
+  depthWrite: false
+});
+
+async function loadIFC(url) {
+  try {
+    status.innerText = "Carregando modelo...";
+    propsPanel.innerHTML = "Clique em um elemento para ver o PSet SPOL EV.";
+
+    if (model) {
+      scene.remove(model);
+      model = null;
+    }
+
+    clearSelection();
+    clearGlobalEdges();
+
+    const loadedModel = await loader.loadAsync(url);
+
+    model = loadedModel;
+    modelID = loadedModel.modelID;
+
+    scene.add(model);
+
+    const box = new THREE.Box3().setFromObject(model);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+
+    // Centraliza o modelo no centro da cena
+    model.position.set(
+      -center.x,
+      -center.y,
+      -center.z
+    );
+
+    addGlobalEdges();
+
+    const newBox = new THREE.Box3().setFromObject(model);
+    grid.position.y = newBox.min.y - 0.5;
+
+    // Vista inicial mais próxima e centralizada
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const dist = maxDim * 0.80;
+
+    camera.position.set(
+      dist * 0.9,
+      dist * 0.7,
+      dist * 1.05
+    );
+
+    camera.near = maxDim / 100;
+    camera.far = maxDim * 100;
+    camera.updateProjectionMatrix();
+
+    controls.target.set(0, 0, 0);
+    controls.update();
+
+    status.innerText = "Modelo carregado.";
+
+  } catch (error) {
+    console.error(error);
+    status.innerText = "Erro ao carregar modelo. Veja o Console.";
+  }
+}
+
+function addGlobalEdges() {
+  if (!model || !model.geometry) return;
+
+  clearGlobalEdges();
+
+  const edgesGeometry = new THREE.EdgesGeometry(model.geometry, 15);
+  globalEdges = new THREE.LineSegments(edgesGeometry, globalEdgeMaterial);
+
+  globalEdges.position.copy(model.position);
+  globalEdges.rotation.copy(model.rotation);
+  globalEdges.scale.copy(model.scale);
+  globalEdges.renderOrder = 10;
+
+  scene.add(globalEdges);
+}
+
+function clearGlobalEdges() {
+  if (globalEdges) {
+    scene.remove(globalEdges);
+    globalEdges.geometry.dispose();
+    globalEdges = null;
+  }
+}
+
+document.getElementById("file-input").addEventListener("change", event => {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const url = URL.createObjectURL(file);
+  loadIFC(url);
+});
+
+if (fileUrl) {
+  loadIFC(fileUrl);
+}
+
+function clearSelection() {
+  if (selectedSubset && modelID !== null) {
+    loader.ifcManager.removeSubset(modelID);
+    selectedSubset = null;
+  }
+
+  if (edgeLines) {
+    scene.remove(edgeLines);
+    edgeLines.geometry.dispose();
+    edgeLines = null;
+  }
+
+  propsPanel.innerHTML = "Clique em um elemento para ver o PSet SPOL EV.";
+}
+
+function getValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object" && "value" in value) return value.value;
+  if (typeof value === "object") return JSON.stringify(value);
+  return value;
+}
+
+function normalizeName(name) {
+  return String(getValue(name))
+    .toUpperCase()
+    .replaceAll("_", " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isSPOLPset(pset) {
+  const name = normalizeName(pset.Name);
+  return (
+    name.includes("PSET SPOL EV") ||
+    name.includes("PSETSPOL EV") ||
+    name.includes("PSETSPOL")
+  );
+}
+
+async function showProps(expressID) {
+  try {
+    let allPsets = [];
+
+    const directPsets = await loader.ifcManager.getPropertySets(modelID, expressID, true);
+    if (directPsets) allPsets = allPsets.concat(directPsets);
+
+    try {
+      const typePsets = await loader.ifcManager.getTypeProperties(modelID, expressID, true);
+      if (typePsets) allPsets = allPsets.concat(typePsets);
+    } catch (e) {
+      console.warn("Sem propriedades de tipo para este elemento.");
+    }
+
+    const pset = allPsets.find(isSPOLPset);
+
+    if (!pset) {
+      propsPanel.innerHTML = "Sem PSet SPOL EV neste elemento.";
+      console.log("Psets encontrados:", allPsets);
+      return;
+    }
+
+    let html = `<div class="prop-title">PSet SPOL EV</div>`;
+
+    const props = pset.HasProperties || [];
+
+    for (const prop of props) {
+      const key = getValue(prop.Name);
+      const value = getValue(prop.NominalValue);
+
+      html += `
+        <div class="prop-row">
+          <div class="prop-key">${key}</div>
+          <div class="prop-value">${value}</div>
+        </div>
+      `;
+    }
+
+    propsPanel.innerHTML = html;
+
+  } catch (error) {
+    console.error(error);
+    propsPanel.innerHTML = "Erro ao ler propriedades.";
+  }
+}
+
+function highlightElement(expressID) {
+  try {
+    clearSelection();
+
+    selectedSubset = loader.ifcManager.createSubset({
+      modelID: modelID,
+      ids: [expressID],
+      scene: scene,
+      removePrevious: true,
+      material: highlightMaterial
+    });
+
+    selectedSubset.position.copy(model.position);
+    selectedSubset.rotation.copy(model.rotation);
+    selectedSubset.scale.copy(model.scale);
+    selectedSubset.renderOrder = 999;
+
+    const edgesGeometry = new THREE.EdgesGeometry(selectedSubset.geometry, 15);
+    edgeLines = new THREE.LineSegments(edgesGeometry, edgeMaterial);
+
+    edgeLines.position.copy(selectedSubset.position);
+    edgeLines.rotation.copy(selectedSubset.rotation);
+    edgeLines.scale.copy(selectedSubset.scale);
+    edgeLines.renderOrder = 1000;
+
+    scene.add(edgeLines);
+
+  } catch (error) {
+    console.warn("Não foi possível destacar o elemento:", error);
+  }
+}
+
+renderer.domElement.addEventListener("click", async event => {
+  if (!model) return;
+
+  const bounds = renderer.domElement.getBoundingClientRect();
+
+  const mouse = new THREE.Vector2(
+    ((event.clientX - bounds.left) / bounds.width) * 2 - 1,
+    -((event.clientY - bounds.top) / bounds.height) * 2 + 1
+  );
+
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(mouse, camera);
+
+  const intersects = raycaster.intersectObject(model, true);
+
+  if (!intersects.length) {
+    clearSelection();
+    return;
+  }
+
+  const intersection = intersects[0];
+
+  const expressID = loader.ifcManager.getExpressId(
+    intersection.object.geometry,
+    intersection.faceIndex
+  );
+
+  if (!expressID) {
+    clearSelection();
+    return;
+  }
+
+  highlightElement(expressID);
+  showProps(expressID);
+});
+
+window.addEventListener("keydown", event => {
+  if (event.key === "Escape") {
+    clearSelection();
+  }
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+animate();
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+
+</body>
+</html>
